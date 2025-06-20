@@ -14,10 +14,13 @@ from catboost import CatBoostClassifier
 API_KEYS = [
     '54a7479bdf2040d3a35d6b3ae6457f9d',
     'd162b35754ca4c54a13ebe7abecab4e0',
-    'a7266b2503fd497496d47527a7e63b5d'
+    'a7266b2503fd497496d47527a7e63b5d',
+    '54a7479bdf2040d3a35d6b3ae6457f9d',
+    '09c09d58ed5e4cf4afd9a9cac8e09b5d',
+    'df00920c02c54a59a426948a47095543'
 ]
 INTERVAL = '1min'
-SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY']
+SYMBOLS = ['EUR/USD', 'USD/JPY', 'GBP/USD', 'AUD/CAD', 'AUD/USD', 'USD/CAD', 'NZD/USD', 'EUR/GBP']
 MULTIPLIER = 100
 api_index = 0
 
@@ -81,11 +84,18 @@ def add_features(df):
     df['bb_upper'] = df['close'].rolling(20).mean() + 2 * df['close'].rolling(20).std()
     df['bb_lower'] = df['close'].rolling(20).mean() - 2 * df['close'].rolling(20).std()
     df['volatility'] = df['high'] - df['low']
-    df['target'] = np.where(df['close'].shift(-1) > df['close'], 1, 0)  # Binary signal for next 1-min
+    df['open_close'] = df['open'] - df['close']
+    df['high_low'] = df['high'] - df['low']
+    df['close_shift1'] = df['close'].shift(1)
+    df['close_shift2'] = df['close'].shift(2)
+    df['return'] = df['close'].pct_change().shift(-1)
+    df['target'] = np.where(df['return'] > 0.0002, 1, 0)  # Threshold for binary candle prediction
     return df.dropna()
 
 def train_ensemble(df):
-    features = ['ma5', 'ma10', 'ema10', 'rsi14', 'momentum', 'macd', 'adx', 'bb_upper', 'bb_lower', 'volatility']
+    features = ['ma5', 'ma10', 'ema10', 'rsi14', 'momentum', 'macd', 'adx',
+                'bb_upper', 'bb_lower', 'volatility', 'open_close', 'high_low',
+                'close_shift1', 'close_shift2']
     df_1 = df[df['target'] == 1]
     df_0 = df[df['target'] == 0]
     min_len = min(len(df_1), len(df_0))
@@ -101,8 +111,8 @@ def train_ensemble(df):
     X_scaled = scaler.fit_transform(X)
 
     tscv = TimeSeriesSplit(n_splits=3)
-    xgb = XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.1, use_label_encoder=False, eval_metric='logloss')
-    cat = CatBoostClassifier(iterations=50, depth=3, learning_rate=0.1, verbose=0)
+    xgb = XGBClassifier(n_estimators=70, max_depth=3, learning_rate=0.05, use_label_encoder=False, eval_metric='logloss')
+    cat = CatBoostClassifier(iterations=70, depth=3, learning_rate=0.05, verbose=0)
 
     ensemble = VotingClassifier(estimators=[('xgb', xgb), ('cat', cat)], voting='soft')
 
@@ -115,7 +125,9 @@ def train_ensemble(df):
     return ensemble, scaler
 
 def predict(df, model, scaler, symbol):
-    features = ['ma5', 'ma10', 'ema10', 'rsi14', 'momentum', 'macd', 'adx', 'bb_upper', 'bb_lower', 'volatility']
+    features = ['ma5', 'ma10', 'ema10', 'rsi14', 'momentum', 'macd', 'adx',
+                'bb_upper', 'bb_lower', 'volatility', 'open_close', 'high_low',
+                'close_shift1', 'close_shift2']
     X_pred = df[features].iloc[[-2]]
     X_scaled = scaler.transform(X_pred)
     proba = model.predict_proba(X_scaled)[0]
@@ -146,7 +158,7 @@ def run_signal_engine():
     for symbol in SYMBOLS:
         print(f"📊 Analyzing {symbol}...")
         df = fetch_data(symbol)
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 60:
             continue
         df = add_features(df)
         model, scaler = train_ensemble(df)
